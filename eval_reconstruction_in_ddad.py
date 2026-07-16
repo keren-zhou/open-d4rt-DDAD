@@ -18,7 +18,7 @@ from PIL import Image
 from eval_track3d_in_worldtrack import _unwrap_state_dict
 from infer_track_3d import _resize_video, _resolve_device
 from src.core import build_logger, load_checkpoint, load_yaml_config, seed_everything
-from src.eval.tasks import _encode_model_memory, _run_model_for_queries, _umeyama_sim3
+from src.eval.tasks import _encode_model_memory, _run_model_for_queries
 from src.model import build_model
 from vis.build_like_demo import _export_video_from_frames, _sample_rgb_from_uv_sequence
 
@@ -334,64 +334,42 @@ def _make_query_with_t_cam(uv_norm: np.ndarray, frame_idx: int, t_cam_idx: int, 
     }
 
 
-def _metric_payload(pred: np.ndarray, gt: np.ndarray) -> dict[str, float]:
+def _local_metric_payload(pred: np.ndarray, gt: np.ndarray, *, scale_global: float) -> dict[str, float]:
     pred = np.asarray(pred, dtype=np.float64)
     gt = np.asarray(gt, dtype=np.float64)
     valid = np.isfinite(pred).all(axis=1) & np.isfinite(gt).all(axis=1) & (gt[:, 2] > 1e-6)
     if not np.any(valid):
         return {
             "valid_queries": 0,
-            "xyz_epe_raw_m": float("nan"),
-            "xyz_epe_global_m": float("nan"),
-            "xyz_epe_sim3_m": float("nan"),
-            "depth_mae_raw_m": float("nan"),
-            "depth_rmse_raw_m": float("nan"),
-            "depth_abs_rel_raw": float("nan"),
-            "depth_mae_global_m": float("nan"),
-            "depth_rmse_global_m": float("nan"),
-            "depth_abs_rel_global": float("nan"),
+            "local_xyz_epe_global_m": float("nan"),
+            "local_depth_abs_rel_global": float("nan"),
             "scale_global": float("nan"),
         }
     pred = pred[valid]
     gt = gt[valid]
-    raw_dist = np.linalg.norm(pred - gt, axis=1)
-    pred_z = pred[:, 2]
-    gt_z = gt[:, 2]
-    z_valid = np.isfinite(pred_z) & np.isfinite(gt_z) & (gt_z > 1e-6)
-    scale_global = _compute_scale_factor_global(gt, pred)
     pred_global = pred * float(scale_global)
     global_dist = np.linalg.norm(pred_global - gt, axis=1)
-
-    sim3_epe = float("nan")
-    sim3 = _umeyama_sim3(pred, gt)
-    if sim3 is not None:
-        sim_scale, sim_rot, sim_trans = sim3
-        pred_sim3 = (float(sim_scale) * (sim_rot @ pred.T)).T + sim_trans
-        sim3_epe = float(np.mean(np.linalg.norm(pred_sim3 - gt, axis=1)))
-
-    def _depth_stats(pred_depth: np.ndarray) -> tuple[float, float, float]:
-        if not np.any(z_valid):
-            return float("nan"), float("nan"), float("nan")
-        err = pred_depth[z_valid] - gt_z[z_valid]
-        mae = float(np.mean(np.abs(err)))
-        rmse = float(np.sqrt(np.mean(err * err)))
-        abs_rel = float(np.mean(np.abs(err) / np.maximum(gt_z[z_valid], 1e-6)))
-        return mae, rmse, abs_rel
-
-    raw_mae, raw_rmse, raw_abs_rel = _depth_stats(pred_z)
-    global_mae, global_rmse, global_abs_rel = _depth_stats(pred_global[:, 2])
+    gt_z = gt[:, 2]
+    global_abs_rel = float(np.mean(np.abs(pred_global[:, 2] - gt_z) / np.maximum(gt_z, 1e-6)))
     return {
         "valid_queries": int(pred.shape[0]),
-        "xyz_epe_raw_m": float(np.mean(raw_dist)),
-        "xyz_epe_global_m": float(np.mean(global_dist)),
-        "xyz_epe_sim3_m": sim3_epe,
-        "depth_mae_raw_m": raw_mae,
-        "depth_rmse_raw_m": raw_rmse,
-        "depth_abs_rel_raw": raw_abs_rel,
-        "depth_mae_global_m": global_mae,
-        "depth_rmse_global_m": global_rmse,
-        "depth_abs_rel_global": global_abs_rel,
+        "local_xyz_epe_global_m": float(np.mean(global_dist)),
+        "local_depth_abs_rel_global": global_abs_rel,
         "scale_global": float(scale_global),
+    }
+
+
+def _ref0_metric_payload(pred: np.ndarray, gt: np.ndarray, *, scale_global: float) -> dict[str, float]:
+    pred = np.asarray(pred, dtype=np.float64).reshape(-1, 3)
+    gt = np.asarray(gt, dtype=np.float64).reshape(-1, 3)
+    valid = np.isfinite(pred).all(axis=1) & np.isfinite(gt).all(axis=1)
+    if not np.any(valid):
+        return {"valid_ref0_queries": 0, "ref0_xyz_epe_global_m": float("nan")}
+    pred_global = pred[valid] * float(scale_global)
+    epe = np.linalg.norm(pred_global - gt[valid], axis=1)
+    return {
+        "valid_ref0_queries": int(np.count_nonzero(valid)),
+        "ref0_xyz_epe_global_m": float(np.mean(epe)),
     }
 
 
@@ -416,15 +394,9 @@ def _weighted_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
     total_queries = int(sum(_query_weight(item) for item in items))
     summary["total_queries"] = total_queries
     keys = [
-        "xyz_epe_raw_m",
-        "xyz_epe_global_m",
-        "xyz_epe_sim3_m",
-        "depth_mae_raw_m",
-        "depth_rmse_raw_m",
-        "depth_abs_rel_raw",
-        "depth_mae_global_m",
-        "depth_rmse_global_m",
-        "depth_abs_rel_global",
+        "local_xyz_epe_global_m",
+        "local_depth_abs_rel_global",
+        "ref0_xyz_epe_global_m",
         "scale_global",
     ]
     for key in keys:
@@ -432,7 +404,11 @@ def _weighted_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
         weights = []
         for item in items:
             value = float(item.get(key, float("nan")))
-            weight = _query_weight(item)
+            weight = (
+                int(item.get("valid_ref0_queries", 0))
+                if key == "ref0_xyz_epe_global_m"
+                else _query_weight(item)
+            )
             if np.isfinite(value) and weight > 0:
                 vals.append(value)
                 weights.append(weight)
@@ -774,7 +750,9 @@ def _evaluate_scene(
     aspect_tensor = torch.from_numpy(aspect).to(device=device, dtype=torch.float32)
 
     frame_metrics: list[dict[str, Any]] = []
+    local_frame_indices: list[int] = []
     local_points: list[np.ndarray] = []
+    local_gt_points: list[np.ndarray] = []
     local_colors: list[np.ndarray] = []
     sparse_payloads_by_frame: list[dict[str, np.ndarray] | None] = [None] * int(len(valid_samples))
     sparse_pred_ref0_points: list[np.ndarray] = []
@@ -806,37 +784,33 @@ def _evaluate_scene(
             memory_b=memory,
         )
         pred_xyz = pred["xyz_3d"].numpy().astype(np.float32)
-        metrics = _metric_payload(pred_xyz, payload["xyz_cam"])
-        metrics.update({"frame_idx": int(frame_idx)})
-        frame_metrics.append(metrics)
+        local_frame_indices.append(int(frame_idx))
         local_points.append(pred_xyz)
+        local_gt_points.append(payload["xyz_cam"].astype(np.float32))
         rgb_small = cv2.resize(rgb_frames[frame_idx], (model_hw[1], model_hw[0]), interpolation=cv2.INTER_AREA)
         u_px = np.rint(payload["uv_norm"][:, 0] * float(max(model_hw[1] - 1, 1))).astype(np.int64)
         v_px = np.rint(payload["uv_norm"][:, 1] * float(max(model_hw[0] - 1, 1))).astype(np.int64)
         colors = rgb_small[np.clip(v_px, 0, model_hw[0] - 1), np.clip(u_px, 0, model_hw[1] - 1)]
         local_colors.append(colors)
-        gt_mask = np.isfinite(payload["xyz_cam"]).all(axis=-1) & (payload["xyz_cam"][:, 2] > 0.0) & (payload["xyz_cam"][:, 2] <= float(args.depth_vis_max_m))
+        gt_mask = np.isfinite(payload["xyz_cam"]).all(axis=-1) & (payload["xyz_cam"][:, 2] > 0.0)
         if np.any(gt_mask):
             t_ref0_cam_gt = t_ref0_world @ payload["T_wc"].astype(np.float64)
             gt_h = np.concatenate(
                 [payload["xyz_cam"][gt_mask].astype(np.float64), np.ones((int(np.count_nonzero(gt_mask)), 1), dtype=np.float64)],
                 axis=1,
             )
-            pred_ref0 = None
-            if bool(args.save_local_ply):
-                query_ref0 = _make_query_with_t_cam(payload["uv_norm"], frame_idx=frame_idx, t_cam_idx=0, device=device)
-                pred_ref0_out = _run_model_for_queries(
-                    model=model,
-                    video_b=video_tensor,
-                    aspect_b=aspect_tensor,
-                    query=query_ref0,
-                    chunk_size=int(args.query_chunk_size),
-                    memory_b=memory,
-                )
-                pred_ref0 = pred_ref0_out["xyz_3d"].numpy().astype(np.float32)[gt_mask]
+            query_ref0 = _make_query_with_t_cam(payload["uv_norm"], frame_idx=frame_idx, t_cam_idx=0, device=device)
+            pred_ref0_out = _run_model_for_queries(
+                model=model,
+                video_b=video_tensor,
+                aspect_b=aspect_tensor,
+                query=query_ref0,
+                chunk_size=int(args.query_chunk_size),
+                memory_b=memory,
+            )
+            pred_ref0 = pred_ref0_out["xyz_3d"].numpy().astype(np.float32)[gt_mask]
             gt_ref0 = (t_ref0_cam_gt @ gt_h.T).T[:, :3].astype(np.float32)
-            if pred_ref0 is not None:
-                sparse_pred_ref0_points.append(pred_ref0)
+            sparse_pred_ref0_points.append(pred_ref0)
             sparse_gt_ref0_points.append(gt_ref0)
         if bool(args.save_world_ply):
             pred_h = np.concatenate([pred_xyz.astype(np.float64), np.ones((pred_xyz.shape[0], 1), dtype=np.float64)], axis=1)
@@ -844,18 +818,32 @@ def _evaluate_scene(
             world_points.append(world)
             world_colors.append(colors)
 
-    if not frame_metrics:
+    if not local_points:
         logger.warning("Skip scene=%s because no valid projected LiDAR queries survived", scene.scene_id)
         return None
 
-    scene_summary = _weighted_summary(frame_metrics)
+    local_pred_all = np.concatenate(local_points, axis=0)
+    local_gt_all = np.concatenate(local_gt_points, axis=0)
+    scale_global = _compute_scale_factor_global(local_gt_all, local_pred_all)
+    scene_summary = _local_metric_payload(local_pred_all, local_gt_all, scale_global=scale_global)
+    if sparse_pred_ref0_points and sparse_gt_ref0_points:
+        scene_summary.update(
+            _ref0_metric_payload(
+                np.concatenate(sparse_pred_ref0_points, axis=0),
+                np.concatenate(sparse_gt_ref0_points, axis=0),
+                scale_global=scale_global,
+            )
+        )
+    for frame_idx, pred_frame, gt_frame in zip(local_frame_indices, local_points, local_gt_points, strict=False):
+        metrics = _local_metric_payload(pred_frame, gt_frame, scale_global=scale_global)
+        metrics.update({"frame_idx": int(frame_idx)})
+        frame_metrics.append(metrics)
     scene_summary.update(
         {
             "scene_id": scene.scene_id,
             "split": scene.split,
             "camera": str(args.camera),
             "num_frames": int(len(valid_samples)),
-            "valid_queries": int(scene_summary.get("total_queries", 0)),
             "model_image_size": [int(model_hw[0]), int(model_hw[1])],
             "frame_metrics": frame_metrics,
         }
@@ -1042,11 +1030,11 @@ def main() -> int:
             handle.write(json.dumps(result, ensure_ascii=False) + "\n")
             handle.flush()
             logger.info(
-                "scene=%s queries=%d xyz_epe_global=%.4f depth_abs_rel_global=%.4f",
+                "scene=%s queries=%d local_depth_abs_rel=%.4f ref0_xyz_epe=%.4f",
                 result["scene_id"],
                 int(result.get("valid_queries", result.get("total_queries", 0))),
-                float(result.get("xyz_epe_global_m", float("nan"))),
-                float(result.get("depth_abs_rel_global", float("nan"))),
+                float(result.get("local_depth_abs_rel_global", float("nan"))),
+                float(result.get("ref0_xyz_epe_global_m", float("nan"))),
             )
 
     summary = {

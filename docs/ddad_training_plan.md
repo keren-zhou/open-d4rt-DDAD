@@ -338,13 +338,9 @@ checkpoint DDAD 评测只作为分析报告，不改变 `best.ckpt` 的含义。
 output/ddad_reconstruction_eval_before/summary.json
 ```
 
-当前 pretrain val 主指标：
-
-```text
-xyz_epe_global_m:      9.3239
-depth_mae_global_m:    7.3101
-depth_abs_rel_global:  0.1514
-```
+上述目录使用旧版逐帧 scale/raw 评测协议。当前协议改为每个 scene 只估计一个 scale，
+并同时评测 local depth 与 reference-0 点云，因此必须先用当前 evaluator 重跑 pretrain
+baseline，旧数值不能作为新实验阈值。
 
 训练后评测命令：
 
@@ -367,7 +363,7 @@ bash scripts/eval_ddad_step_ckpts.sh \
   --checkpoint-dir output/ddad_reconstruction_train/checkpoints \
   --output-root output/ddad_reconstruction_step_eval \
   --split val \
-  --metric depth_abs_rel_global
+  --metric local_depth_abs_rel_global
 ```
 
 输出：
@@ -379,12 +375,12 @@ output/ddad_reconstruction_step_eval/ddad_step_eval_report.json
 这里的 `best.step` 是分析报告里的 DDAD 指标最优 step，不会覆盖训练正式产物
 `checkpoints/best.ckpt`。
 
-对比：
+对比时使用相同 evaluator 重跑的 baseline，主看：
 
-- `depth_abs_rel_global` 是否低于 `0.1514`。
-- `depth_mae_global_m` 是否低于 `7.3101`。
-- `xyz_epe_global_m` 是否低于 `9.3239`。
-- `scale_global` 是否更接近稳定，不要只看 raw 尺度。
+- `local_depth_abs_rel_global` 是否下降。
+- `local_xyz_epe_global_m` 是否下降或至少不明显退化。
+- `ref0_xyz_epe_global_m` 是否下降。
+- `scale_global` 仅用于确认整个 scene 只应用了一个固定 scale，不作为优化目标。
 
 ## 7. 验收标准
 

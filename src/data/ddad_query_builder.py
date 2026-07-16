@@ -70,6 +70,7 @@ def build_queries_from_sparse_lidar(
     depth_consistency_rel: float = 0.05,
     depth_consistency_radius_px: float = 1.5,
     force_tgt_cam_to_src: bool = False,
+    reference0_ratio: float | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray, np.ndarray]:
     """Build D4RT query/target/mask/query_stats from projected DDAD LiDAR.
 
@@ -85,18 +86,30 @@ def build_queries_from_sparse_lidar(
         raise ValueError("DDAD query builder received an empty clip")
 
     q_t_src = rng.integers(0, t, size=(m,), dtype=np.int64)
-    q_t_tgt, q_t_cam, _ = sample_t_tgt_t_cam(
-        rng=rng,
-        queries_per_clip=m,
-        clip_frames=t,
-        prob_t_tgt_equals_t_cam=float(prob_t_tgt_equals_t_cam),
-        q_t_src=q_t_src,
-        t_src_tgt_delta_choices=t_src_tgt_delta_choices,
-        t_src_tgt_delta_probs=t_src_tgt_delta_probs,
-    )
+    is_reference0_query = np.zeros((m,), dtype=np.bool_)
+    if bool(force_tgt_cam_to_src) and reference0_ratio is not None:
+        raise ValueError("force_tgt_cam_to_src and reference0_ratio cannot both be enabled")
     if bool(force_tgt_cam_to_src):
         q_t_tgt = q_t_src.copy()
         q_t_cam = q_t_src.copy()
+    elif reference0_ratio is not None:
+        ratio = float(reference0_ratio)
+        if not 0.0 <= ratio <= 1.0:
+            raise ValueError(f"reference0_ratio must be in [0, 1], got {ratio}")
+        q_t_tgt = q_t_src.copy()
+        q_t_cam = q_t_src.copy()
+        is_reference0_query = sample_hard_query_flags(rng, m, ratio)
+        q_t_cam[is_reference0_query] = 0
+    else:
+        q_t_tgt, q_t_cam, _ = sample_t_tgt_t_cam(
+            rng=rng,
+            queries_per_clip=m,
+            clip_frames=t,
+            prob_t_tgt_equals_t_cam=float(prob_t_tgt_equals_t_cam),
+            q_t_src=q_t_src,
+            t_src_tgt_delta_choices=t_src_tgt_delta_choices,
+            t_src_tgt_delta_probs=t_src_tgt_delta_probs,
+        )
 
     q_u = np.zeros((m,), dtype=np.float32)
     q_v = np.zeros((m,), dtype=np.float32)
@@ -229,7 +242,10 @@ def build_queries_from_sparse_lidar(
             m_disp[i] = True
 
     query = {"u": q_u, "v": q_v, "t_src": q_t_src, "t_tgt": q_t_tgt, "t_cam": q_t_cam}
-    query_stats = {"is_hard_query": is_hard_query}
+    query_stats = {
+        "is_hard_query": is_hard_query,
+        "is_reference0_query": is_reference0_query,
+    }
     target = {"xyz_3d": y_xyz, "uv_2d": y_uv, "visibility": y_vis, "displacement": y_disp, "normal": y_normal}
     mask = {"xyz_3d": m_xyz, "uv_2d": m_uv, "visibility": m_vis, "displacement": m_disp, "normal": m_normal}
     return query, target, mask, query_stats, sparse_depth, sparse_valid

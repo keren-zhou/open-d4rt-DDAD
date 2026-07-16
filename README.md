@@ -1,6 +1,6 @@
 <div align="center">
   <h1>OpenD4RT-DDAD：稀疏 LiDAR 监督微调与三维重建</h1>
-  <p><strong>基于 OpenD4RT 完成 DDAD 模型训练、重建评估及训练前后对比</strong></p>
+  <p><strong>使用 50% local / 50% reference-0 稀疏 LiDAR 监督进行 DDAD 三维重建微调</strong></p>
   <p>
     <a href="README_OpenD4RT.md">OpenD4RT 原始 README</a> |
     <a href="docs/ddad_training_plan.md">训练设计</a> |
@@ -51,16 +51,18 @@ checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt
 | 训练集 | 150 | `000000-000149` |
 | 验证集 | 50 | `000150-000199` |
 
-当前训练配置：
+同步 LiDAR 点投影到 `CAMERA_01` 后构造稀疏 `xyz_3d` GT。每个训练 clip
+包含 48 帧和 4,096 个 query，并按 query 数精确分成两个监督分支：
 
-- 相机：`CAMERA_01`
-- Clip 长度：48 帧
-- 模型输入分辨率：`256 x 256`
-- 每个训练 clip 采样 4,096 个稀疏 LiDAR query
-- 将同步 LiDAR 点投影到相机坐标系构造 `xyz_3d` GT
-- 使用 `t_src = t_tgt = t_cam` 做单帧稀疏三维重建
-- 开启 `xyz_3d` 和 confidence 监督
-- 不使用点轨迹或 tracking 监督
+| 分支 | 比例 | 每个 clip 的 query 数 | Query | 监督目标 |
+| --- | ---: | ---: | --- | --- |
+| Local reconstruction | 50% | 2,048 | `(t_src,t_tgt,t_cam)=(t,t,t)` | 在当前第 `t` 帧相机坐标系中重建点 |
+| Reference-0 reconstruction | 50% | 2,048 | `(t_src,t_tgt,t_cam)=(t,t,0)` | 在第 0 帧相机坐标系中重建同一点 |
+
+`t_src` 在 clip 内均匀采样，`t_tgt=t_src`，`t_cam` 在当前帧和第 0 帧之间按
+50/50 采样。训练启用 mean-depth-normalized `xyz_3d` L1 与 confidence 监督，不使用
+点轨迹、2D tracking、visibility 或其他 DDAD 不具备 GT 的任务监督。模型输入分辨率为
+`256 x 256`，训练时启用 stride 1-2 的时间子采样，不使用颜色或随机裁剪增强。
 
 本地数据目录格式：
 
@@ -83,26 +85,29 @@ conda activate d4rt
 ```
 
 当前训练和评估使用 Python 3.10、PyTorch 2.6、CUDA 12.4，以及 4 张 48 GB
-NVIDIA GPU。
+NVIDIA GeForce RTX 4090。
 
 ## 模型训练
 
-已完成的 DDAD 微调共训练 20,000 step，使用每卡 batch size 1、每个 clip 4,096 个
-query、AdamW 优化器，以及从 `4e-6` 衰减到 `4e-7` 的 cosine learning rate。
+最新模型从 OpenD4RT 48 帧 checkpoint 初始化，在 4 张 RTX 4090 48GB 上训练
+20,000 step，耗时约 10 小时。每卡 batch size 为 1，每个 optimizer step 共处理 4 个
+clip；优化器使用 AdamW，learning rate 经过 500-step warmup 到 `4e-6`，再以 cosine
+schedule 衰减到 `4e-7`。训练全程保持精确的 50% local / 50% reference-0 query 比例。
 
 ```bash
 bash scripts/train_ddad_reconstruction_4gpu.sh \
-  --output-dir output/ddad_reconstruction_train \
+  --train-config configs/train_ddad_reconstruction_local_ref0_50_50.yaml \
+  --output-dir output/ddad_train_local_ref0_50_50 \
   --init-model checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt \
   --data-root /data/jhc/ddad_train_val \
   --total-steps 20000 \
   --gpus 0,1,2,3
 ```
 
-正式使用的训练后 checkpoint：
+正式使用的 checkpoint 按最低 `val_loss_total` 选取，对应 step 16,000：
 
 ```text
-output/ddad_reconstruction_train/checkpoints/best.ckpt
+output/ddad_train_local_ref0_50_50/checkpoints/best.ckpt
 ```
 
 ## 模型评估
@@ -116,7 +121,7 @@ bash scripts/eval_ddad_forward_4gpu.sh \
   --model-config checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/model.yaml \
   --ckpt-path checkpoints/OpenD4RT_48CLIP_9Mix_NoCropAUG/opend4rt.ckpt \
   --data-root /data/jhc/ddad_train_val \
-  --output-dir output/ddad_reconstruction_eval_before \
+  --output-dir output/ddad_eval_opend4rt_base \
   --split val \
   --gpus 0,1,2,3 \
   --no-vis
@@ -126,49 +131,39 @@ bash scripts/eval_ddad_forward_4gpu.sh \
 
 ```bash
 bash scripts/eval_ddad_forward_4gpu.sh \
-  --model-config output/ddad_reconstruction_train/config/model_effective.yaml \
-  --ckpt-path output/ddad_reconstruction_train/checkpoints/best.ckpt \
+  --model-config output/ddad_train_local_ref0_50_50/config/model_effective.yaml \
+  --ckpt-path output/ddad_train_local_ref0_50_50/checkpoints/best.ckpt \
   --data-root /data/jhc/ddad_train_val \
-  --output-dir output/ddad_reconstruction_eval_after \
+  --output-dir output/ddad_eval_local_ref0_50_50_best_val \
   --split val \
   --gpus 0,1,2,3 \
   --no-vis
 ```
 
-训练前后评估使用相同的 50 个 validation scene、每个 scene 48 帧，共计
-4,915,200 个稀疏 LiDAR query。
+Base 和训练后模型使用完全相同的 50 个 validation scene、每个 scene 48 帧。Local 与
+reference-0 分支各评估 4,915,200 个有效稀疏 LiDAR query。
 
-## 评估结果
+## 评估指标
 
-所有误差指标都是越低越好。`scale_global` 是 scale-aligned 评估时需要乘到预测点上的
-尺度系数，理想值为 `1`。
+DDAD 评测与模型的尺度无关训练目标保持一致：每个 scene 的全部 local 稀疏点共同估计
+一个 median scale，并将这个固定 scale 同时用于 local 和 reference-0 分支。Ref0 不再
+单独估计 scale，也不使用旋转、平移或 Sim3 对齐。三个主指标均为越低越好：
 
-| 指标 | 训练前 | 训练后 | 变化 |
+- `local_depth_abs_rel_global`：local 坐标系中 scale-aligned 深度的绝对相对误差。
+- `local_xyz_epe_global_m`：local 坐标系中 scale-aligned XYZ 的平均欧氏距离，单位为米。
+- `ref0_xyz_epe_global_m`：第 0 帧相机坐标系中 XYZ 的平均欧氏距离，使用同一个 local
+  scene scale，单位为米。
+
+### 验证集结果
+
+| 模型 | Local depth AbsRel ↓ | Local XYZ EPE ↓ | Ref0 XYZ EPE ↓ |
 | --- | ---: | ---: | ---: |
-| `xyz_epe_raw_m` | 30.0865 | **28.3821** | 降低 5.7% |
-| `xyz_epe_global_m` | 9.3239 | **4.3880** | 降低 52.9% |
-| `xyz_epe_sim3_m` | 9.6980 | **4.5724** | 降低 52.9% |
-| `depth_mae_global_m` | 7.3101 | **4.2238** | 降低 42.2% |
-| `depth_abs_rel_raw` | 0.91445 | **0.86693** | 降低 5.2% |
-| `depth_abs_rel_global` | 0.15135 | **0.09777** | 降低 35.4% |
-| `scale_global` | 11.4564 | **7.7162** | 距离理想值 1 缩短 35.8% |
+| OpenD4RT Base | 0.15338 | 9.3465 m | 13.8147 m |
+| **DDAD 50/50 local-ref0** | **0.09545** | **4.2708 m** | **5.0129 m** |
+| 相对改善 | **37.77%** | **54.31%** | **63.71%** |
 
-<p align="center">
-  <a href="docs/assets/ddad/reconstruction_metrics.pdf">
-    <img src="docs/assets/ddad/reconstruction_metrics.png" width="1000" alt="DDAD 微调前后重建指标对比">
-  </a>
-</p>
-
-结果表明，DDAD 微调显著改善了尺度对齐后的场景几何；50 个 validation scene 中，
-`xyz_epe_global_m` 全部改善，`depth_abs_rel_global` 有 49 个 scene 改善。Raw 米制
-指标提升较小，且 `scale_global` 仍明显偏离 `1`，因此模型的直接米制尺度预测仍是当前
-主要局限。
-
-重新生成指标图：
-
-```bash
-python scripts/plot_ddad_reconstruction_metrics.py
-```
+所有数值均由当前 evaluator 在相同验证集和相同 query 配置下重新计算。旧版逐帧 scale、
+raw 和 Sim3 指标不再作为本项目结果报告。
 
 ## 重建可视化
 
@@ -178,65 +173,65 @@ python scripts/plot_ddad_reconstruction_metrics.py
 RGB | 预测 dense depth | 稀疏 LiDAR 误差叠加
 ```
 
-稀疏误差图中，绿色点表示误差较小，红色点表示误差较大。点击下面的图片可以打开对应
-MP4 视频。
+稀疏误差图中，绿色点表示误差较小，红色点表示误差较大。Base 和训练后模型均使用
+`256 x 256` dense query 网格生成深度与点云，确保可视化分辨率一致。点击预览图可打开
+对应的三联 MP4 视频。
 
 <table>
   <tr>
-    <th>DDAD 微调前</th>
-    <th>DDAD 微调后</th>
+    <th>OpenD4RT Base</th>
+    <th>DDAD 50/50 local-ref0</th>
   </tr>
   <tr>
     <td>
-      <a href="docs/assets/ddad/scene_000000_before.mp4">
-        <img src="docs/assets/ddad/reconstruction_before.jpg" width="480" alt="DDAD 微调前重建结果">
+      <a href="docs/assets/ddad/scene_000000_base.mp4">
+        <img src="docs/assets/ddad/reconstruction_base.jpg" width="480" alt="OpenD4RT Base 三维重建结果">
       </a>
     </td>
     <td>
-      <a href="docs/assets/ddad/scene_000000_after.mp4">
-        <img src="docs/assets/ddad/reconstruction_after.jpg" width="480" alt="DDAD 微调后重建结果">
+      <a href="docs/assets/ddad/scene_000000_local_ref0_50_50.mp4">
+        <img src="docs/assets/ddad/reconstruction_local_ref0_50_50.jpg" width="480" alt="DDAD 50/50 local-ref0 三维重建结果">
       </a>
     </td>
   </tr>
 </table>
 
-其他训练前后视频：
+其他 Base / 50/50 对比视频：
 
-| Scene | 训练前 | 训练后 |
+| Scene | OpenD4RT Base | DDAD 50/50 local-ref0 |
 | --- | --- | --- |
-| `000000` | [MP4](docs/assets/ddad/scene_000000_before.mp4) | [MP4](docs/assets/ddad/scene_000000_after.mp4) |
-| `000001` | [MP4](docs/assets/ddad/scene_000001_before.mp4) | [MP4](docs/assets/ddad/scene_000001_after.mp4) |
-| `000002` | [MP4](docs/assets/ddad/scene_000002_before.mp4) | [MP4](docs/assets/ddad/scene_000002_after.mp4) |
-| `000003` | [MP4](docs/assets/ddad/scene_000003_before.mp4) | [MP4](docs/assets/ddad/scene_000003_after.mp4) |
+| `000000` | [MP4](docs/assets/ddad/scene_000000_base.mp4) | [MP4](docs/assets/ddad/scene_000000_local_ref0_50_50.mp4) |
+| `000001` | [MP4](docs/assets/ddad/scene_000001_base.mp4) | [MP4](docs/assets/ddad/scene_000001_local_ref0_50_50.mp4) |
+| `000002` | [MP4](docs/assets/ddad/scene_000002_base.mp4) | [MP4](docs/assets/ddad/scene_000002_local_ref0_50_50.mp4) |
+| `000003` | [MP4](docs/assets/ddad/scene_000003_base.mp4) | [MP4](docs/assets/ddad/scene_000003_local_ref0_50_50.mp4) |
 
 这 4 个可视化 scene 来自 DDAD 训练集，用于直观检查模型适配前后的变化；上面的定量
-指标只使用 held-out validation split。
+指标只使用 validation split。
+
+### Reference-0 点云
+
+下图为模型使用 `(t_src,t_tgt,t_cam)=(t,t,0)` 直接预测并统一到第 0 帧相机坐标系的
+`256 x 256` dense 点云。
+
+<p align="center">
+  <img src="docs/assets/ddad/dense_ref0_pointcloud.png" width="900" alt="DDAD reference-0 稠密点云预测">
+</p>
+
+稀疏 LiDAR query 对比中，蓝色为模型直接预测的 reference-0 点，黄色为使用 DDAD GT
+pose 变换到第 0 帧相机坐标系的 LiDAR GT。两者使用与定量评估相同的 scene scale。
+
+<p align="center">
+  <img src="docs/assets/ddad/sparse_ref0_comparison.png" width="811" alt="DDAD reference-0 预测与 LiDAR GT 点云对比">
+</p>
 
 ## 输出目录
 
 ```text
 output/
-  ddad_reconstruction_train/          # checkpoint、日志、配置、TensorBoard
-  ddad_reconstruction_eval_before/    # OpenD4RT 训练前验证集基线
-  ddad_reconstruction_eval_after/     # DDAD 微调后验证集结果
-  ddad_reconstruction_vis_before/     # 训练前可视化
-  ddad_reconstruction_vis_after/      # 训练后可视化
-  ddad_reconstruction_comparison/     # 指标对比图
+  ddad_train_local_ref0_50_50/         # 50/50 checkpoint、日志、配置、TensorBoard
+  ddad_eval_opend4rt_base/             # 当前协议下的 OpenD4RT Base 验证集结果
+  ddad_eval_local_ref0_50_50_best_val/ # 当前协议下的训练后验证集结果
+  ddad_reconstruction_vis_before/      # OpenD4RT Base 256-grid 可视化
+  ddad_vis_local_ref0_50_50_best/      # 训练后 256-grid 可视化
 ```
 
-## 相关文档
-
-- [DDAD 重建评估设计](docs/ddad_forward_reconstruction.md)
-- [DDAD 评估运行手册](docs/ddad_forward_runbook.md)
-- [DDAD 训练设计](docs/ddad_training_plan.md)
-- [OpenD4RT 原始 README](README_OpenD4RT.md)
-
-## 致谢
-
-本项目基于民间 OpenD4RT 实现和 D4RT 研究工作开发。使用或发布结果时，请遵循
-[README_OpenD4RT.md](README_OpenD4RT.md) 中的上游引用和许可证说明。本仓库不重新
-分发 DDAD 数据。
-
-## 许可证
-
-见 [LICENSE](LICENSE) 以及 OpenD4RT 上游许可证说明。

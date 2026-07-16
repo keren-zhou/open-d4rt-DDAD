@@ -13,7 +13,7 @@ MAX_LIDAR_QUERIES_PER_FRAME="${MAX_LIDAR_QUERIES_PER_FRAME:-2048}"
 GPUS="${GPUS:-0,1,2,3}"
 MIN_STEP="${MIN_STEP:-0}"
 MAX_STEP="${MAX_STEP:-999999999}"
-METRIC="${METRIC:-depth_abs_rel_global}"
+METRIC="${METRIC:-local_depth_abs_rel_global}"
 
 usage() {
   cat <<'EOF'
@@ -29,7 +29,7 @@ Options:
   --gpus IDS                Comma-separated GPUs. Default: 0,1,2,3
   --min-step N              Minimum step checkpoint to evaluate.
   --max-step N              Maximum step checkpoint to evaluate.
-  --metric NAME             Metric used to report the best step. Default: depth_abs_rel_global
+  --metric NAME             Metric used to report the best step. Default: local_depth_abs_rel_global
   -h, --help                Show this help.
 
 This script runs DDAD forward eval for saved step checkpoints and writes an analysis report:

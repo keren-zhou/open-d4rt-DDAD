@@ -561,6 +561,7 @@ def _build_tartanair_raw(split: str, cfg: Any, manifest_paths: list[str] | None 
 def _build_ddad_raw(split: str, cfg: Any, manifest_paths: list[str] | None = None):
     del manifest_paths
     augment_cfg = augment_cfg_from_train_config(cfg)
+    reference0_ratio_raw = cfg.get_path("train_sampling.timestep_sampling.reference0_ratio", None)
     return DdadRawDataset(
         DdadRawConfig(
             root=Path(cfg.get_path("data.ddad.root", "/data/jhc/ddad_train_val")),
@@ -579,6 +580,7 @@ def _build_ddad_raw(split: str, cfg: Any, manifest_paths: list[str] | None = Non
             depth_consistency_rel=float(cfg.get_path("data.ddad.depth_consistency_rel", 0.05)),
             depth_consistency_radius_px=float(cfg.get_path("data.ddad.depth_consistency_radius_px", 1.5)),
             force_tgt_cam_to_src=bool(cfg.get_path("data.ddad.force_tgt_cam_to_src", False)),
+            reference0_ratio=None if reference0_ratio_raw is None else float(reference0_ratio_raw),
             min_lidar_points_per_frame=int(cfg.get_path("data.ddad.min_lidar_points_per_frame", 32)),
             augment=augment_cfg,
             bad_sample_registry_path=_bad_sample_registry_path(cfg),

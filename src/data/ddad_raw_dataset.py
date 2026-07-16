@@ -44,6 +44,7 @@ class DdadRawConfig:
     depth_consistency_rel: float = 0.05
     depth_consistency_radius_px: float = 1.5
     force_tgt_cam_to_src: bool = False
+    reference0_ratio: float | None = None
     min_lidar_points_per_frame: int = 32
     augment: RawAugmentConfig | None = None
     bad_sample_registry_path: Path = Path("data/meta/bad_sample.json")
@@ -402,6 +403,7 @@ class DdadRawDataset(SeededDatasetMixin, Dataset):
             depth_consistency_rel=float(self.cfg.depth_consistency_rel),
             depth_consistency_radius_px=float(self.cfg.depth_consistency_radius_px),
             force_tgt_cam_to_src=bool(self.cfg.force_tgt_cam_to_src),
+            reference0_ratio=self.cfg.reference0_ratio,
         )
 
         if int(mask["xyz_3d"].sum()) <= 0:

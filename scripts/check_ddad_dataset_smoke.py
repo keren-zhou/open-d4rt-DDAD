@@ -46,6 +46,7 @@ def main() -> int:
     mask_xyz = sample["mask"]["xyz_3d"]
     mask_uv = sample["mask"]["uv_2d"]
     finite_xyz = torch.isfinite(sample["target"]["xyz_3d"]).all(dim=-1)
+    reference0 = sample.get("query_stats", {}).get("is_reference0_query")
     payload = {
         "split": str(args.split),
         "dataset_len": int(len(dataset)),
@@ -56,6 +57,8 @@ def main() -> int:
         "uv_valid": int(mask_uv.sum().item()),
         "finite_xyz_on_valid": bool(finite_xyz[mask_xyz].all().item()) if bool(mask_xyz.any()) else False,
         "depth_valid_pixels": int(sample["depth_valid"].sum().item()),
+        "reference0_queries": int(reference0.sum().item()) if torch.is_tensor(reference0) else 0,
+        "reference0_ratio": float(reference0.float().mean().item()) if torch.is_tensor(reference0) else 0.0,
         "meta": sample["meta"],
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))

@@ -225,24 +225,18 @@ SuperSplat 这类 Gaussian Splat 查看器通常期待 3DGS 专用 PLY 属性，
 主要看 `summary.json` 里的：
 
 ```text
-xyz_epe_raw_m
-xyz_epe_global_m
-xyz_epe_sim3_m
-depth_mae_raw_m
-depth_rmse_raw_m
-depth_abs_rel_raw
-depth_mae_global_m
-depth_rmse_global_m
-depth_abs_rel_global
+local_depth_abs_rel_global
+local_xyz_epe_global_m
+ref0_xyz_epe_global_m
 scale_global
 total_queries
 ```
 
 解释：
 
-- `raw`：不做尺度对齐，直接看模型是否输出 DDAD 米制尺度。
-- `global`：沿用项目 WorldTrack 风格的 global scale alignment。
-- `sim3`：Umeyama/Sim3 对齐后的诊断指标。
+- `global`：沿用项目 WorldTrack 风格，每个 scene 只估计一个 scale。
+- `local` 和 `ref0` 共用该 scale，ref0 不单独对齐。
+- raw 和 Sim3 不作为主评测指标。
 - `total_queries`：实际参与评测的 LiDAR 投影点数量。
 
 ## 7. 调参建议

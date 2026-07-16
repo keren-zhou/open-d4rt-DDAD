@@ -322,6 +322,8 @@ class Trainer:
 
         self._query_total = 0
         self._query_tgt_eq_cam_total = 0
+        self._query_reference0_total = 0
+        self._query_reference0_known_total = 0
         self._query_hard_total = 0
         self._query_hard_known_total = 0
         self._mask_totals: dict[str, dict[str, float]] = {
@@ -595,6 +597,13 @@ class Trainer:
             self._query_tgt_eq_cam_total += int(eq.sum().item())
 
         query_stats = batch.get("query_stats", {})
+        is_reference0 = query_stats.get("is_reference0_query") if isinstance(query_stats, dict) else None
+        if torch.is_tensor(is_reference0):
+            reference0_bool = is_reference0.bool()
+            stats["query_reference0_ratio"] = float(reference0_bool.float().mean().item())
+            self._query_reference0_known_total += int(reference0_bool.numel())
+            self._query_reference0_total += int(reference0_bool.sum().item())
+
         is_hard = query_stats.get("is_hard_query") if isinstance(query_stats, dict) else None
         if torch.is_tensor(is_hard):
             hard_bool = is_hard.bool()
@@ -623,6 +632,8 @@ class Trainer:
         out: dict[str, float] = {}
         if self._query_total > 0:
             out["query_prob_t_tgt_eq_t_cam"] = float(self._query_tgt_eq_cam_total) / float(self._query_total)
+        if self._query_reference0_known_total > 0:
+            out["query_reference0_ratio"] = float(self._query_reference0_total) / float(self._query_reference0_known_total)
         if self._query_hard_known_total > 0:
             out["query_hard_ratio"] = float(self._query_hard_total) / float(self._query_hard_known_total)
         for key, accum in self._mask_totals.items():
@@ -1009,12 +1020,13 @@ class Trainer:
                         self.metric_logger.log(payload)
                     self._tb_log_train_payload(payload)
                     self.logger.info(
-                        "step=%d loss=%.6f lr=%.3e step/s=%.2f hard=%.3f p(t_tgt=t_cam)=%.3f",
+                        "step=%d loss=%.6f lr=%.3e step/s=%.2f hard=%.3f ref0=%.3f p(t_tgt=t_cam)=%.3f",
                         self.global_step,
                         payload["loss_total"],
                         payload["lr"],
                         payload["steps_per_sec"],
                         payload.get("query_hard_ratio", float("nan")),
+                        payload.get("query_reference0_ratio", float("nan")),
                         payload.get("query_prob_t_tgt_eq_t_cam", float("nan")),
                     )
 

@@ -112,26 +112,20 @@ DDAD 不单独开一套模型前向路径，应该复用仓库已有 evaluation 
 
 ## 指标
 
-仓库当前 WorldTrack 评测里已经有 scale-aware 的 3D 对齐逻辑，例如 global
-scale 和 Sim3。DDAD 的重建指标应该尽量复用这种项目已有风格，但命名要明确是
-reconstruction，不要混成 tracking APD。
+仓库当前 WorldTrack 评测使用 sequence-global scale alignment。DDAD 同样对每个
+scene 的全部 local 稀疏点只估计一次 scale，并把它固定用于 local 和 reference-0
+分支；不要按帧重新估计 scale。
 
 必需指标：
 
-- `xyz_epe_raw_m`：预测 3D 点和 GT 相机坐标 3D 点的欧氏距离均值，不做对齐。
-- `xyz_epe_global_m`：global scale alignment 后的 3D EPE。
-- `depth_mae_raw_m`：原始 `z` 深度 MAE。
-- `depth_rmse_raw_m`：原始 `z` 深度 RMSE。
-- `depth_abs_rel_raw`：`abs(pred_z - gt_z) / gt_z`。
-- `depth_mae_global_m`：global scale alignment 后的深度 MAE。
-- `depth_rmse_global_m`：global scale alignment 后的深度 RMSE。
-- `depth_abs_rel_global`：global scale alignment 后的深度 AbsRel。
+- `local_depth_abs_rel_global`：scene-global scale alignment 后的 local depth AbsRel。
+- `local_xyz_epe_global_m`：scene-global scale alignment 后的 local XYZ EPE。
+- `ref0_xyz_epe_global_m`：使用同一 scene scale 的 reference-0 点云 EPE。
 - `valid_queries`：实际用于评测的 LiDAR 投影 query 数。
-- `scale_global`：使用的 global scale。
+- `scale_global`：该 scene 使用的对齐 scale，仅作协议与可视化诊断。
 
 可选指标：
 
-- `xyz_epe_sim3_m`：使用仓库现有 Umeyama/Sim3 工具后的 3D EPE。
 - 按距离分桶，例如 `0-20m`、`20-40m`、`40-80m`、`80m+`。
 - confidence-weighted summary，用模型的 `confidence` head 做诊断。
 
@@ -175,10 +169,8 @@ GT 相对 pose 比较。
 
 ## 尺度处理
 
-必须同时报告 raw 和 aligned 两套指标。
-
-raw 指标回答：模型是否直接预测出了 DDAD 的米制尺度。
-aligned 指标回答：模型的几何形状是否在尺度对齐后成立。
+主报告只使用 aligned 指标，因为训练的 XYZ loss 对预测和 GT 分别做 mean-depth
+normalization，并不监督绝对米制尺度。raw 指标不作为模型选择或结论依据。
 
 第一版 aligned 路径应贴近仓库已有 global-scale 风格：
 
@@ -186,8 +178,8 @@ aligned 指标回答：模型的几何形状是否在尺度对齐后成立。
 pred_aligned = pred * global_scale
 ```
 
-scale / alignment 尽量复用仓库现有工具，不单独发明一套不一致的规则。
-当有效点足够多时，可以把 Sim3 作为可选诊断。
+一个 scene 只计算一次 `global_scale`。reference-0 EPE 必须复用从 local 点估计的
+同一个 scale，不能为点云分支重新对齐，也不使用 Sim3 掩盖参考系误差。
 
 ## 可视化输出
 

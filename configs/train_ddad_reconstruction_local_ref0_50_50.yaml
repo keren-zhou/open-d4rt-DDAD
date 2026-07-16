@@ -1,0 +1,148 @@
+experiment:
+  name: d4rt_ddad_reconstruction_local_ref0_50_50
+  seed: 42
+  output_dir: output/ddad_reconstruction_local_ref0_50_50_train
+runtime:
+  framework: pytorch_reimplementation_of_kauldron_protocol
+  mixed_precision: true
+  fail_on_non_finite: true
+  batch_size: 1
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 2
+  train_num_workers: 4
+  val_num_workers: 2
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 1
+  timeout: 300
+  data_parallel: false
+  find_unused_parameters: true
+  train_prefetch_factor: 2
+  debug_slow_stage_seconds: 20
+data:
+  canonical_schema_doc: docs/data_schema.md
+  clip_frames: 48
+  image_size:
+  - 256
+  - 256
+  train_dataset_type: ddad_raw
+  val_dataset_type: ddad_raw
+  bad_sample_registry:
+    path: data/meta/bad_sample_ddad.json
+    max_retries: 64
+  ddad:
+    root: /data/jhc/ddad_train_val
+    camera: CAMERA_01
+    max_lidar_points_per_frame: 20000
+    min_lidar_points_per_frame: 32
+    depth_consistency_abs_m: 0.5
+    depth_consistency_rel: 0.05
+    depth_consistency_radius_px: 1.5
+    force_tgt_cam_to_src: false
+train_sampling:
+  queries_per_clip: 4096
+  hard_query_ratio: 0.0
+  hard_query_source: ddad_sparse_lidar
+  timestep_sampling:
+    t_src: uniform
+    t_tgt: source_only_reconstruction
+    t_cam: local_or_reference0
+    prob_t_tgt_equals_t_cam: 0.5
+    reference0_ratio: 0.5
+    t_src_tgt_delta_mode: "off"
+loss:
+  total: weighted_sum
+  xyz_3d:
+    enabled: true
+    type: l1
+    weight_lambda_3d: 1.0
+    normalize_by_mean_depth: true
+    value_transform: sign_x_log1p_abs_x
+  uv_2d:
+    enabled: false
+    type: l1
+    weight_lambda_2d: 0.1
+  visibility:
+    enabled: false
+    type: bce
+    weight_lambda_vis: 0.1
+  displacement:
+    enabled: false
+    type: l1
+    weight_lambda_disp: 0.1
+  normal:
+    enabled: false
+    type: cosine_similarity
+    weight_lambda_normal: 0.4
+  confidence:
+    enabled: true
+    mode: main_text
+    weight_lambda_conf: 0.2
+    confidence_penalty: -log(c)
+    confidence_weights_xyz_error: true
+    lconf_ablation:
+      enabled: false
+      type: exp_neg_abs_xyz_error_l1
+      weight_lambda_lconf: 0.2
+  apply_only_where_gt_available: true
+  reprojection_uv_from_xyz:
+    enabled: false
+optimizer:
+  type: adamw
+  weight_decay: 0.03
+  gradient_clip_l2_norm: 10.0
+  learning_rate:
+    schedule: cosine_decay
+    warmup_steps: 500
+    peak_lr: 4.0e-06
+    final_lr: 4.0e-07
+augmentation:
+  color_jitter:
+    enabled: false
+  color_drop:
+    enabled: false
+    probability: 0.0
+  gaussian_blur:
+    enabled: false
+    probability: 0.0
+  random_crop:
+    enabled: false
+    scale_min_max:
+    - 1.0
+    - 1.0
+    random_zoom_in_probability: 0.0
+  temporal_subsample:
+    enabled: true
+    stride_min: 1
+    stride_max: 2
+schedule:
+  total_steps: 20000
+  local_repro_override:
+    enabled: false
+checkpoint:
+  save_every_steps: 1000
+  step_save_every_steps: 1000
+  keep_last_k: 20
+  keep_best_by: val_loss_total
+  auto_eval_worldtrack_step:
+    enabled: false
+logging:
+  log_every_steps: 100
+  validate_every_steps: 2000
+  validate_max_batches_global: 64
+  validate_max_samples_global: 256
+  per_dataset_validation:
+    enabled: false
+    max_batches_global: 0
+    max_samples_global: 512
+  visualization:
+    enabled: true
+    train_every_steps: 1000
+    on_validation: true
+    max_samples: 1
+    max_points: 128
+    max_lines: -1
+    include_3d: true
+    save_png: true
+

@@ -18,17 +18,13 @@ DEFAULT_BEFORE = Path("output/ddad_reconstruction_eval_before/summary.json")
 DEFAULT_AFTER = Path("output/ddad_reconstruction_eval_after/summary.json")
 DEFAULT_OUTPUT = Path("output/ddad_reconstruction_comparison")
 ERROR_METRICS = (
-    ("xyz_epe_raw_m", "XYZ EPE (raw)", "m"),
-    ("xyz_epe_global_m", "XYZ EPE (scale-aligned)", "m"),
-    ("xyz_epe_sim3_m", "XYZ EPE (Sim3)", "m"),
-    ("depth_mae_global_m", "Depth MAE (scale-aligned)", "m"),
-    ("depth_abs_rel_raw", "Depth AbsRel (raw)", ""),
-    ("depth_abs_rel_global", "Depth AbsRel (scale-aligned)", ""),
+    ("local_depth_abs_rel_global", "Local depth AbsRel", ""),
+    ("local_xyz_epe_global_m", "Local XYZ EPE", "m"),
+    ("ref0_xyz_epe_global_m", "Ref0 point-cloud EPE", "m"),
 )
 
 BEFORE_COLOR = "#B5B0AA"
 AFTER_COLOR = "#0072B2"
-IDEAL_COLOR = "#D55E00"
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,8 +49,6 @@ def load_summary(path: Path) -> dict[str, float]:
     for key, _, _ in ERROR_METRICS:
         if key not in summary:
             raise ValueError(f"Missing metric {key!r} in {path}")
-    if "scale_global" not in summary:
-        raise ValueError(f"Missing metric 'scale_global' in {path}")
     return summary
 
 
@@ -101,12 +95,7 @@ def main() -> int:
     after = load_summary(args.after)
     apply_style()
 
-    fig, (ax_error, ax_scale) = plt.subplots(
-        1,
-        2,
-        figsize=(10.4, 4.7),
-        gridspec_kw={"width_ratios": [3.6, 1.4]},
-    )
+    fig, ax_error = plt.subplots(1, 1, figsize=(8.8, 4.5))
 
     y = np.arange(len(ERROR_METRICS), dtype=np.float64)
     bar_height = 0.31
@@ -129,7 +118,7 @@ def main() -> int:
         color=AFTER_COLOR,
         label=args.after_label,
     )
-    ax_error.set_title("(a) Reconstruction error", loc="left", pad=12)
+    ax_error.set_title("Scene-scale-aligned reconstruction error", loc="left", pad=12)
     ax_error.set_yticks(y, [label for _, label, _ in ERROR_METRICS])
     ax_error.invert_yaxis()
     ax_error.set_xlim(0.0, 148.0)
@@ -162,72 +151,6 @@ def main() -> int:
             color="#4B5563",
         )
 
-    before_scale = float(before["scale_global"])
-    after_scale = float(after["scale_global"])
-    before_distance = abs(before_scale - 1.0)
-    after_distance = abs(after_scale - 1.0)
-    distance_reduction = (
-        (before_distance - after_distance) / before_distance * 100.0
-        if before_distance > 0.0
-        else 0.0
-    )
-
-    ax_scale.set_title("(b) Scale calibration", loc="left", pad=12)
-    ax_scale.axvline(1.0, color=IDEAL_COLOR, linewidth=1.2, linestyle="--")
-    ax_scale.annotate(
-        "",
-        xy=(after_scale, 0.0),
-        xytext=(before_scale, 0.0),
-        arrowprops={"arrowstyle": "-|>", "color": "#7C7873", "linewidth": 1.5},
-    )
-    ax_scale.scatter(before_scale, 0.0, s=78, color=BEFORE_COLOR, zorder=3)
-    ax_scale.scatter(after_scale, 0.0, s=78, color=AFTER_COLOR, zorder=3)
-    ax_scale.text(
-        before_scale,
-        0.085,
-        f"{args.before_label}\n{before_scale:.3f}x",
-        ha="center",
-        va="bottom",
-        fontsize=8.5,
-        color="#4B5563",
-    )
-    ax_scale.text(
-        after_scale,
-        -0.085,
-        f"{args.after_label}\n{after_scale:.3f}x",
-        ha="center",
-        va="top",
-        fontsize=8.5,
-        color=AFTER_COLOR,
-        fontweight="semibold",
-    )
-    ax_scale.text(
-        1.0,
-        0.31,
-        "Ideal = 1",
-        ha="left",
-        va="center",
-        fontsize=8.5,
-        color=IDEAL_COLOR,
-    )
-    ax_scale.text(
-        0.5,
-        0.08,
-        f"{distance_reduction:.1f}% closer\nto metric scale",
-        transform=ax_scale.transAxes,
-        ha="center",
-        va="bottom",
-        fontsize=8.5,
-        color=AFTER_COLOR,
-        fontweight="bold",
-    )
-    ax_scale.set_xlim(0.0, max(before_scale, after_scale) * 1.1)
-    ax_scale.set_ylim(-0.42, 0.42)
-    ax_scale.set_xlabel("Scale multiplier")
-    ax_scale.set_yticks([])
-    ax_scale.grid(axis="y", visible=False)
-    ax_scale.spines["left"].set_visible(False)
-
     scenes = int(after.get("num_scenes", 0))
     queries = int(after.get("total_queries", 0))
     fig.suptitle(
@@ -254,7 +177,7 @@ def main() -> int:
         ncol=2,
         frameon=False,
     )
-    fig.subplots_adjust(left=0.24, right=0.97, top=0.82, bottom=0.17, wspace=0.34)
+    fig.subplots_adjust(left=0.25, right=0.96, top=0.80, bottom=0.18)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     png_path = args.output_dir / "ddad_reconstruction_metrics.png"

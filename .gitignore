@@ -21,4 +21,4 @@ venv/
 .cursorignore
 .cursorindexingignore
 **/VideoMAE2
-checkpoints/**
+checkpoints/**/videomae2/**/*.pth
